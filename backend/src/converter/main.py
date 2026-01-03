@@ -1,12 +1,12 @@
 import re
-from typing import List, Tuple
+from typing import Dict, List, Tuple, Union
 
-def convert_cpp_to_python(code: str) -> str:
+def convert_cpp_to_python(code: str) -> Dict[str, Union[str, List[str]]]:
     """
     Convert C++ code to Python code.
 
     @args: code: str - C++ code as a string
-    @returns: str - Converted Python code as a string
+    @returns: Dict with full string and per-line list
     """
     lines = code.split('\n')
     result = []
@@ -18,8 +18,6 @@ def convert_cpp_to_python(code: str) -> str:
         if not stripped or stripped.startswith('//'):
             result.append(line)
             continue
-        
-        original_indent = len(line) - len(line.lstrip())
         
         if stripped.startswith('class Solution'):
             result.append('class Solution:')
@@ -54,8 +52,12 @@ def convert_cpp_to_python(code: str) -> str:
     
     python_code = '\n'.join(result)
     python_code = cleanup_code(python_code)
+    python_lines = python_code.split('\n') if python_code else []
     
-    return python_code
+    return {
+        "python": python_code,
+        "lines": python_lines,
+    }
 
 def convert_line(line: str) -> str:
     """Convert a single line of C++ to Python."""

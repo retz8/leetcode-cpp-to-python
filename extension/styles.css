@@ -160,3 +160,29 @@
 .cpp-to-python-overlay-content::-webkit-scrollbar-thumb:hover {
   background: #4d4d4d;
 }
+
+/* Inline lens overlay on GitHub code */
+.cpp-lens-hidden-text {
+  color: transparent !important;
+  caret-color: transparent !important;
+  opacity: 0 !important; /* fully hide original C++ text */
+}
+
+.cpp-lens-hide-node {
+  visibility: hidden !important;
+}
+
+.cpp-lens-overlay {
+  pointer-events: none;
+  white-space: pre;
+  color: #d4d4d4;
+}
+
+.cpp-lens-overlay-pre {
+  margin: 0;
+  white-space: pre;
+}
+
+.cpp-lens-table-line {
+  background: rgba(102, 126, 234, 0.08);
+}

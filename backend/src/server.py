@@ -42,7 +42,12 @@ def convert():
     code = data.get("code", "")
     try:
         result = convert_cpp_to_python(code)
-        return jsonify({"success": True, "python": result, "errors": []})
+        return jsonify({
+            "success": True,
+            "python": result.get("python", ""),
+            "lines": result.get("lines", []),
+            "errors": []
+        })
     except Exception as e:
         return jsonify({"success": False, "python": "", "errors": [str(e)]}), 500
 
