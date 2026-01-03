@@ -40,10 +40,8 @@ def convert():
     """
     data = request.get_json(silent=True) or {}
     code = data.get("code", "")
-    print("[DEBUG] code received: ", code)
     try:
         result = convert_cpp_to_python(code)
-        print("[DEBUG] conversion result: ", result.get("lines", []))
         return jsonify({
             "success": True,
             "python": result.get("python", ""),
