@@ -1,340 +1,625 @@
-// Global lens state
-let lensState = { active: false, cleanup: null };
-let convertButton = null;
+// =============================================================================
+// LeetCode C++ to Python Lens - Content Script
+// =============================================================================
+// Simple approach: Store original code, completely replace with Python,
+// restore original when toggling back. No overlays, no fighting with GitHub's
+// textarea - just clean DOM replacement.
+// =============================================================================
 
-// Check if we're viewing a C++ file
-function isCppFile() {
-  const path = window.location.pathname;
-  return path.endsWith('.cpp') || path.endsWith('.cc') || path.endsWith('.cxx') || path.endsWith('.h') || path.endsWith('.hpp');
-}
+(function () {
+  "use strict";
 
-// Create and inject the floating convert button
-function createConvertButton() {
-  if (!isCppFile()) {
-    return;
-  }
-  
-  convertButton = document.createElement('button');
-  convertButton.id = 'cpp-to-python-convert-btn';
-  convertButton.textContent = 'Convert to Python';
-  convertButton.className = 'cpp-to-python-btn';
-  document.body.appendChild(convertButton);
-  
-  convertButton.addEventListener('click', onConvertButtonClick);
-}
+  // ===========================================================================
+  // CONFIGURATION
+  // ===========================================================================
+  const LENS_CONFIG = {
+    pythonColor: "#2563eb",
+    buttonActiveColor: "#16a34a",
+    buttonInactiveColor: "#2563eb",
 
-// Extract code from GitHub code viewer
-function extractCode() {
-  // Method 1: Try to get code from the read-only textarea (new GitHub UI)
-  const textarea = document.querySelector('textarea#read-only-cursor-text-area[aria-label="file content"]');
-  if (textarea && textarea.value) {
-    return textarea.value;
-  }
-  
-  // Method 2: Try alternative textarea selector
-  const readOnlyTextarea = document.querySelector('textarea[readonly]');
-  if (readOnlyTextarea && readOnlyTextarea.value) {
-    return readOnlyTextarea.value;
-  }
-  
-  // Method 3: Try to get code from the blob content div (old GitHub UI)
-  const blobContent = document.querySelector('.blob-wrapper table');
-  if (blobContent) {
-    const lines = blobContent.querySelectorAll('td.blob-code');
-    if (lines.length > 0) {
-      return Array.from(lines)
-        .map(line => line.textContent)
-        .join('\n');
-    }
-  }
-  
-  // Method 4: Try raw text from pre tag
-  const preElement = document.querySelector('.blob-wrapper pre');
-  if (preElement) {
-    return preElement.textContent;
-  }
-  
-  // Method 5: Try Lines component
-  const codeLines = document.querySelectorAll('[data-code-text]');
-  if (codeLines.length > 0) {
-    return Array.from(codeLines)
-      .map(line => line.getAttribute('data-code-text'))
-      .join('\n');
-  }
-  
-  return null;
-}
+    selectors: {
+      codeTextarea: '#read-only-cursor-text-area[aria-label="file content"]',
+      reactLineContents: ".react-code-line-contents-no-virtualization",
+      reactLineById: '[id^="LC"]',
+      reactCodeContainer: ".react-code-lines",
+      reactBlobCode: '[data-testid="blob-code"]',
+      legacyBlobCode: ".blob-wrapper table td.blob-code",
+      legacyBlobPre: ".blob-wrapper pre",
+    },
 
-function normalizePythonLines(data) {
-  if (!data) return [];
-  if (Array.isArray(data.lines)) return data.lines.map(String);
-  if (Array.isArray(data.python_lines)) return data.python_lines.map(String);
-  const block = data.python || data.python_code || data.result || '';
-  if (typeof block === 'string') {
-    return block.split(/\r?\n/);
-  }
-  return [];
-}
-
-function getCodeContext() {
-  const textarea = document.querySelector('textarea#read-only-cursor-text-area[aria-label="file content"]') || document.querySelector('textarea[readonly]');
-  if (textarea) {
-    const renderedLines = document.querySelectorAll('.react-code-line-contents-no-virtualization, [id^="LC"]');
-    return { type: 'textarea', textarea, renderedLines: Array.from(renderedLines) };
-  }
-  const tableLines = document.querySelectorAll('.blob-wrapper table td.blob-code');
-  if (tableLines && tableLines.length) {
-    return { type: 'table', lines: Array.from(tableLines) };
-  }
-  const preElement = document.querySelector('.blob-wrapper pre');
-  if (preElement) {
-    return { type: 'pre', pre: preElement };
-  }
-  return null;
-}
-
-function applyLens(pythonLines) {
-  const context = getCodeContext();
-  if (!context) {
-    throw new Error('Could not find a compatible GitHub code viewer');
-  }
-  if (context.type === 'textarea') {
-    return applyTextareaLens(context.textarea, pythonLines, context.renderedLines || []);
-  }
-  if (context.type === 'table') {
-    return applyTableLens(context.lines, pythonLines);
-  }
-  return applyPreLens(context.pre, pythonLines);
-}
-
-function applyTextareaLens(textarea, pythonLines, renderedLines) {
-  const parent = textarea.parentElement;
-  const parentComputedPosition = getComputedStyle(parent).position;
-  const restoreParentPosition = parent.style.position;
-  if (parentComputedPosition === 'static') {
-    parent.style.position = 'relative';
-  }
-
-  const overlay = document.createElement('div');
-  overlay.className = 'cpp-lens-overlay';
-  const overlayPre = document.createElement('pre');
-  overlayPre.className = 'cpp-lens-overlay-pre';
-  overlayPre.textContent = pythonLines.join('\n');
-  overlay.appendChild(overlayPre);
-  parent.appendChild(overlay);
-
-  const computed = getComputedStyle(textarea);
-  overlay.style.position = 'absolute';
-  overlay.style.pointerEvents = 'none';
-  overlay.style.background = computed.backgroundColor || 'transparent';
-  overlay.style.whiteSpace = 'pre';
-  overlay.style.overflow = 'hidden';
-  overlay.style.font = computed.font;
-  overlay.style.lineHeight = computed.lineHeight;
-  overlay.style.padding = computed.padding;
-  overlay.style.left = `${textarea.offsetLeft}px`;
-  overlay.style.top = `${textarea.offsetTop}px`;
-  overlay.style.width = `${textarea.offsetWidth}px`;
-  overlay.style.height = `${textarea.offsetHeight}px`;
-  overlay.style.zIndex = '2';
-  overlayPre.style.margin = '0';
-  overlayPre.style.color = '#d4d4d4';
-  overlayPre.style.whiteSpace = 'pre';
-
-  const originalStyles = {
-    color: textarea.style.color,
-    caretColor: textarea.style.caretColor,
-    pointerEvents: textarea.style.pointerEvents
+    supportedExtensions: [".cpp", ".cc", ".cxx", ".hpp", ".h"],
   };
 
-  textarea.classList.add('cpp-lens-hidden-text');
-  textarea.style.pointerEvents = 'auto';
-
-  const syncScroll = () => {
-    overlayPre.style.transform = `translateY(-${textarea.scrollTop}px)`;
-  };
-  const syncPosition = () => {
-    overlay.style.left = `${textarea.offsetLeft}px`;
-    overlay.style.top = `${textarea.offsetTop}px`;
-    overlay.style.width = `${textarea.offsetWidth}px`;
-    overlay.style.height = `${textarea.offsetHeight}px`;
-  };
-
-  // Replace rendered lines in the React view if present
-  const renderedOriginals = renderedLines.map(node => node.textContent);
-  if (renderedLines.length) {
-    const padded = [...pythonLines];
-    while (padded.length < renderedLines.length) padded.push('');
-    renderedLines.forEach((node, idx) => {
-      node.textContent = padded[idx] ?? '';
-      node.classList.add('cpp-lens-table-line');
-    });
-  }
-
-  textarea.addEventListener('scroll', syncScroll);
-  const resizeObserver = new ResizeObserver(() => {
-    syncPosition();
-  });
-  resizeObserver.observe(textarea);
-  syncPosition();
-  syncScroll();
-
-  return () => {
-    resizeObserver.disconnect();
-    textarea.removeEventListener('scroll', syncScroll);
-    if (renderedLines.length) {
-      renderedLines.forEach((node, idx) => {
-        node.textContent = renderedOriginals[idx];
-        node.classList.remove('cpp-lens-table-line');
-      });
-    }
-    textarea.classList.remove('cpp-lens-hidden-text');
-    textarea.style.color = originalStyles.color;
-    textarea.style.caretColor = originalStyles.caretColor;
-    textarea.style.pointerEvents = originalStyles.pointerEvents;
-    overlay.remove();
-    parent.style.position = restoreParentPosition;
-  };
-}
-
-function applyTableLens(lineNodes, pythonLines) {
-  const originals = lineNodes.map(node => node.textContent);
-  const padded = [...pythonLines];
-  while (padded.length < lineNodes.length) {
-    padded.push('');
-  }
-  lineNodes.forEach((node, idx) => {
-    node.textContent = padded[idx];
-    node.classList.add('cpp-lens-table-line');
-  });
-  return () => {
-    lineNodes.forEach((node, idx) => {
-      node.textContent = originals[idx];
-      node.classList.remove('cpp-lens-table-line');
-    });
-  };
-}
-
-function applyPreLens(preElement, pythonLines) {
-  const original = preElement.textContent;
-  preElement.textContent = pythonLines.join('\n');
-  preElement.classList.add('cpp-lens-table-line');
-  return () => {
-    preElement.textContent = original;
-    preElement.classList.remove('cpp-lens-table-line');
-  };
-}
-
-// Handle convert button click with lens toggle
-async function onConvertButtonClick() {
-  if (lensState.active) {
-    removeLens();
-    return;
-  }
-  await handleConvert();
-}
-
-async function handleConvert() {
-  const code = extractCode();
-  
-  if (!code) {
-    showOverlay('Error: Could not extract code from editor');
-    return;
-  }
-  
-  try {
-    const response = await chrome.runtime.sendMessage({
-      action: 'convertCode',
-      code: code
-    });
+  // ===========================================================================
+  // LENS STATE
+  // ===========================================================================
+  const lensState = {
+    active: false,
+    pythonLines: [],
+    pythonFullCode: "",
     
-    if (!response.success) {
-      throw new Error(response.error);
-    }
+    // Store original state for complete restoration
+    originalState: {
+      textareaValue: "",
+      lineElements: [], // Array of { element, originalHTML }
+    },
     
-    const pythonLines = normalizePythonLines(response.data);
-    if (!pythonLines.length) {
-      throw new Error('No translated Python code returned');
+    observer: null,
+    button: null,
+    isConverting: false,
+  };
+
+  // ===========================================================================
+  // UTILITY FUNCTIONS
+  // ===========================================================================
+
+  function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  /**
+   * Create the HTML for a Python line, matching GitHub's code structure
+   */
+  function createPythonLineHTML(displayText) {
+    if (displayText === "") {
+      // Empty line - use a regular space to maintain line height
+      return `<span class="pl-lens-python" style="color: ${LENS_CONFIG.pythonColor};"> </span>`;
+    } else {
+      // For non-empty lines, preserve all whitespace exactly
+      const escapedContent = escapeHtml(displayText);
+      return `<span class="pl-lens-python" style="color: ${LENS_CONFIG.pythonColor}; white-space: pre;">${escapedContent}</span>`;
     }
+  }
+
+  /**
+   * Apply Python content to a line element
+   */
+  function applyPythonToElement(el, displayText) {
+    // Set the innerHTML with our Python content
+    el.innerHTML = createPythonLineHTML(displayText);
     
-    // Remove any previous lens before applying a new one
-    removeLens();
-    const cleanup = applyLens(pythonLines);
-    lensState = { active: true, cleanup };
-    updateButtonLabel();
-  } catch (error) {
-    showOverlay(`Error: ${error.message}\n\nMake sure the backend server is running.`);
+    // Also ensure the parent element preserves whitespace
+    // This is crucial for indentation to display correctly
+    el.style.whiteSpace = "pre";
+    el.style.tabSize = "4";
   }
-}
 
-function removeLens() {
-  if (lensState.cleanup) {
-    lensState.cleanup();
+  function isCppFile() {
+    const path = window.location.pathname;
+    return LENS_CONFIG.supportedExtensions.some((ext) =>
+      path.toLowerCase().endsWith(ext)
+    );
   }
-  lensState = { active: false, cleanup: null };
-  updateButtonLabel();
-}
 
-function updateButtonLabel() {
-  if (!convertButton) return;
-  convertButton.textContent = lensState.active ? 'Show Original (C++)' : 'Convert to Python';
-}
-
-// Create and show overlay panel
-function showOverlay(content) {
-  // Remove existing overlay if any
-  const existingOverlay = document.getElementById('cpp-to-python-overlay');
-  if (existingOverlay) {
-    existingOverlay.remove();
+  function isGitHubBlobPage() {
+    return (
+      window.location.hostname === "github.com" &&
+      window.location.pathname.includes("/blob/")
+    );
   }
-  
-  // Create overlay
-  const overlay = document.createElement('div');
-  overlay.id = 'cpp-to-python-overlay';
-  overlay.className = 'cpp-to-python-overlay';
-  
-  overlay.innerHTML = `
-    <div class="cpp-to-python-overlay-header">
-      <h3>Python Code</h3>
-      <button class="cpp-to-python-close-btn" id="cpp-to-python-close">×</button>
-    </div>
-    <div class="cpp-to-python-overlay-content">
-      <pre><code>${escapeHtml(content)}</code></pre>
-    </div>
-    <div class="cpp-to-python-overlay-footer">
-      <button class="cpp-to-python-copy-btn" id="cpp-to-python-copy">Copy to Clipboard</button>
-    </div>
-  `;
-  
-  document.body.appendChild(overlay);
-  
-  // Add event listeners
-  document.getElementById('cpp-to-python-close').addEventListener('click', () => {
-    overlay.remove();
-  });
-  
-  document.getElementById('cpp-to-python-copy').addEventListener('click', () => {
-    navigator.clipboard.writeText(content).then(() => {
-      const copyBtn = document.getElementById('cpp-to-python-copy');
-      const originalText = copyBtn.textContent;
-      copyBtn.textContent = 'Copied!';
-      setTimeout(() => {
-        copyBtn.textContent = originalText;
-      }, 2000);
+
+  function getLineNumber(el) {
+    if (el.id) {
+      const idMatch = el.id.match(/^LC(\d+)$/);
+      if (idMatch) return parseInt(idMatch[1], 10);
+    }
+
+    if (el.dataset?.lineNumber) {
+      return parseInt(el.dataset.lineNumber, 10);
+    }
+
+    const rowWithData = el.closest("[data-line-number]");
+    if (rowWithData) {
+      return parseInt(rowWithData.dataset.lineNumber, 10);
+    }
+
+    const parentRow = el.closest(".react-code-line");
+    if (parentRow) {
+      const lineNumEl = parentRow.querySelector(".react-line-number");
+      if (lineNumEl) {
+        return parseInt(lineNumEl.textContent, 10);
+      }
+    }
+
+    const tableRow = el.closest("tr");
+    if (tableRow) {
+      const lineNumCell = tableRow.querySelector(".blob-num");
+      if (lineNumCell) {
+        const num = parseInt(lineNumCell.textContent || lineNumCell.dataset?.lineNumber, 10);
+        if (!isNaN(num)) return num;
+      }
+    }
+
+    return null;
+  }
+
+  function extractCppCode() {
+    const textarea = document.querySelector(LENS_CONFIG.selectors.codeTextarea);
+    if (textarea && textarea.value) {
+      return textarea.value;
+    }
+
+    const lineSelectors = [
+      LENS_CONFIG.selectors.reactLineContents,
+      LENS_CONFIG.selectors.reactLineById,
+      LENS_CONFIG.selectors.legacyBlobCode,
+    ];
+
+    for (const selector of lineSelectors) {
+      const lines = document.querySelectorAll(selector);
+      if (lines.length > 0) {
+        const codeLines = [];
+        lines.forEach((el) => {
+          const lineNum = getLineNumber(el);
+          if (lineNum !== null) {
+            while (codeLines.length < lineNum) {
+              codeLines.push("");
+            }
+            codeLines[lineNum - 1] = el.textContent || "";
+          }
+        });
+        return codeLines.join("\n");
+      }
+    }
+
+    const preBlock = document.querySelector(LENS_CONFIG.selectors.legacyBlobPre);
+    if (preBlock) {
+      return preBlock.textContent;
+    }
+
+    return null;
+  }
+
+  function getCodeLineElements() {
+    let elements = document.querySelectorAll(LENS_CONFIG.selectors.reactLineContents);
+    if (elements.length > 0) return Array.from(elements);
+
+    elements = document.querySelectorAll(LENS_CONFIG.selectors.reactLineById);
+    if (elements.length > 0) return Array.from(elements);
+
+    elements = document.querySelectorAll(LENS_CONFIG.selectors.legacyBlobCode);
+    if (elements.length > 0) return Array.from(elements);
+
+    return [];
+  }
+
+  function getCodeContainer() {
+    return (
+      document.querySelector(LENS_CONFIG.selectors.reactBlobCode) ||
+      document.querySelector(LENS_CONFIG.selectors.reactCodeContainer) ||
+      document.querySelector(".blob-wrapper")
+    );
+  }
+
+  // ===========================================================================
+  // CORE LENS FUNCTIONS - SIMPLE REPLACEMENT APPROACH
+  // ===========================================================================
+
+  /**
+   * Store the original state of all code elements
+   */
+  function storeOriginalState() {
+    // Store textarea value
+    const textarea = document.querySelector(LENS_CONFIG.selectors.codeTextarea);
+    if (textarea) {
+      lensState.originalState.textareaValue = textarea.value;
+    }
+
+    // Store each line element's original HTML and styles
+    const lineElements = getCodeLineElements();
+    lensState.originalState.lineElements = lineElements.map((el) => ({
+      element: el,
+      originalHTML: el.innerHTML,
+      originalWhiteSpace: el.style.whiteSpace,
+      originalTabSize: el.style.tabSize,
+      lineNum: getLineNumber(el),
+    }));
+
+    console.log("[Lens] Stored original state for", lineElements.length, "lines");
+  }
+
+  /**
+   * Replace all code lines with Python code
+   * 
+   * GitHub renders code with the text content directly inside spans.
+   * The leading whitespace is preserved as part of the text.
+   * We need to mimic this exact structure.
+   */
+  function replaceWithPython() {
+    const lineElements = getCodeLineElements();
+
+    lineElements.forEach((el) => {
+      const lineNum = getLineNumber(el);
+      if (lineNum === null || lineNum < 1) return;
+
+      const pythonLine = lensState.pythonLines[lineNum - 1];
+      const displayText = pythonLine !== undefined ? pythonLine : "";
+
+      // Apply Python content using our helper
+      applyPythonToElement(el, displayText);
     });
-  });
-}
 
-// Utility function to escape HTML
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
+    // Also update the textarea so copy from GitHub's native mechanism works
+    const textarea = document.querySelector(LENS_CONFIG.selectors.codeTextarea);
+    if (textarea) {
+      textarea.value = lensState.pythonFullCode;
+    }
 
-// Initialize when page loads
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', createConvertButton);
-} else {
-  createConvertButton();
-}
+    console.log("[Lens] Replaced", lineElements.length, "lines with Python");
+  }
+
+  /**
+   * Restore original C++ code
+   */
+  function restoreOriginal() {
+    // Restore each line element's HTML and styles
+    lensState.originalState.lineElements.forEach(({ element, originalHTML, originalWhiteSpace, originalTabSize }) => {
+      if (element.isConnected) {
+        element.innerHTML = originalHTML;
+        element.style.whiteSpace = originalWhiteSpace || "";
+        element.style.tabSize = originalTabSize || "";
+      }
+    });
+
+    // Restore textarea
+    const textarea = document.querySelector(LENS_CONFIG.selectors.codeTextarea);
+    if (textarea && lensState.originalState.textareaValue) {
+      textarea.value = lensState.originalState.textareaValue;
+    }
+
+    console.log("[Lens] Restored original C++ code");
+  }
+
+  /**
+   * Handle new lines added by GitHub's virtualized scrolling
+   */
+  function handleNewLines() {
+    if (!lensState.active) return;
+
+    const lineElements = getCodeLineElements();
+    
+    lineElements.forEach((el) => {
+      // Check if this element was already processed
+      const isAlreadyProcessed = el.querySelector('.pl-lens-python') !== null;
+      if (isAlreadyProcessed) return;
+
+      // Check if we have this element stored
+      const stored = lensState.originalState.lineElements.find(
+        (item) => item.element === el
+      );
+
+      if (!stored) {
+        // New element - store its original HTML and replace with Python
+        const lineNum = getLineNumber(el);
+        if (lineNum === null || lineNum < 1) return;
+
+        lensState.originalState.lineElements.push({
+          element: el,
+          originalHTML: el.innerHTML,
+          lineNum: lineNum,
+        });
+
+        const pythonLine = lensState.pythonLines[lineNum - 1];
+        const displayText = pythonLine !== undefined ? pythonLine : "";
+
+        // Apply Python content using our helper
+        applyPythonToElement(el, displayText);
+      }
+    });
+  }
+
+  /**
+   * Set up MutationObserver for virtualized scrolling
+   */
+  function setupMutationObserver() {
+    if (lensState.observer) {
+      lensState.observer.disconnect();
+    }
+
+    const container = getCodeContainer();
+    if (!container) {
+      console.warn("[Lens] Could not find code container for observer");
+      return;
+    }
+
+    lensState.observer = new MutationObserver((mutations) => {
+      if (!lensState.active) return;
+
+      let hasNewNodes = false;
+      for (const mutation of mutations) {
+        if (mutation.addedNodes.length > 0) {
+          hasNewNodes = true;
+          break;
+        }
+      }
+
+      if (hasNewNodes) {
+        requestAnimationFrame(() => {
+          handleNewLines();
+        });
+      }
+    });
+
+    lensState.observer.observe(container, {
+      childList: true,
+      subtree: true,
+    });
+
+    console.log("[Lens] MutationObserver set up");
+  }
+
+  /**
+   * Activate the lens
+   */
+  function activateLens(pythonCode, pythonLines) {
+    lensState.pythonFullCode = pythonCode;
+    lensState.pythonLines = pythonLines;
+
+    console.log("[Lens] Activating with", pythonLines.length, "lines");
+
+    // Store original state FIRST
+    storeOriginalState();
+
+    // Replace with Python
+    replaceWithPython();
+
+    // Set up observer for scroll virtualization
+    setupMutationObserver();
+
+    lensState.active = true;
+    updateButtonState();
+
+    console.log("[Lens] Activated - Python code now displayed");
+  }
+
+  /**
+   * Deactivate the lens
+   */
+  function deactivateLens() {
+    // Disconnect observer
+    if (lensState.observer) {
+      lensState.observer.disconnect();
+      lensState.observer = null;
+    }
+
+    // Restore original
+    restoreOriginal();
+
+    // Clear stored state
+    lensState.originalState.lineElements = [];
+    lensState.originalState.textareaValue = "";
+
+    lensState.active = false;
+    updateButtonState();
+
+    console.log("[Lens] Deactivated - Original C++ code restored");
+  }
+
+  // ===========================================================================
+  // BACKEND COMMUNICATION
+  // ===========================================================================
+
+  async function convertCode(cppCode) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        { action: "convertCode", code: cppCode },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          if (response && response.success) {
+            const data = response.data;
+            let lines = data.lines;
+            if (!lines || lines.length === 0) {
+              lines = data.python.split("\n");
+            }
+            resolve({
+              python: data.python,
+              lines: lines,
+            });
+          } else {
+            reject(new Error(response?.error || "Conversion failed"));
+          }
+        }
+      );
+    });
+  }
+
+  // ===========================================================================
+  // UI COMPONENTS
+  // ===========================================================================
+
+  function updateButtonState() {
+    if (!lensState.button) return;
+
+    if (lensState.isConverting) {
+      lensState.button.textContent = "Converting...";
+      lensState.button.disabled = true;
+      lensState.button.style.backgroundColor = "#9ca3af";
+      lensState.button.style.cursor = "wait";
+    } else if (lensState.active) {
+      lensState.button.textContent = "Show Original (C++)";
+      lensState.button.disabled = false;
+      lensState.button.style.backgroundColor = LENS_CONFIG.buttonActiveColor;
+      lensState.button.style.cursor = "pointer";
+    } else {
+      lensState.button.textContent = "Convert to Python";
+      lensState.button.disabled = false;
+      lensState.button.style.backgroundColor = LENS_CONFIG.buttonInactiveColor;
+      lensState.button.style.cursor = "pointer";
+    }
+  }
+
+  async function handleButtonClick() {
+    if (lensState.isConverting) return;
+
+    if (lensState.active) {
+      deactivateLens();
+    } else {
+      // Check if we already have converted code cached
+      if (lensState.pythonLines.length > 0) {
+        activateLens(lensState.pythonFullCode, lensState.pythonLines);
+      } else {
+        const cppCode = extractCppCode();
+        if (!cppCode) {
+          console.error("[Lens] Could not extract C++ code");
+          alert("Could not extract code from this page.");
+          return;
+        }
+
+        console.log("[Lens] Extracting and converting C++ code...");
+        lensState.isConverting = true;
+        updateButtonState();
+
+        try {
+          const result = await convertCode(cppCode);
+          lensState.isConverting = false;
+          activateLens(result.python, result.lines);
+        } catch (error) {
+          lensState.isConverting = false;
+          updateButtonState();
+          console.error("[Lens] Conversion error:", error);
+          alert(`Conversion failed: ${error.message}`);
+        }
+      }
+    }
+  }
+
+  function createButton() {
+    const existing = document.getElementById("lens-toggle-button");
+    if (existing) existing.remove();
+
+    const button = document.createElement("button");
+    button.id = "lens-toggle-button";
+    button.textContent = "Convert to Python";
+
+    Object.assign(button.style, {
+      position: "fixed",
+      bottom: "20px",
+      right: "20px",
+      zIndex: "10000",
+      padding: "12px 20px",
+      backgroundColor: LENS_CONFIG.buttonInactiveColor,
+      color: "white",
+      border: "none",
+      borderRadius: "8px",
+      fontSize: "14px",
+      fontWeight: "600",
+      cursor: "pointer",
+      boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)",
+      transition: "all 0.2s ease",
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    });
+
+    button.addEventListener("mouseenter", () => {
+      if (!lensState.isConverting) {
+        button.style.transform = "translateY(-2px)";
+        button.style.boxShadow = "0 6px 16px rgba(0, 0, 0, 0.2)";
+      }
+    });
+
+    button.addEventListener("mouseleave", () => {
+      button.style.transform = "translateY(0)";
+      button.style.boxShadow = "0 4px 12px rgba(0, 0, 0, 0.15)";
+    });
+
+    button.addEventListener("click", handleButtonClick);
+
+    document.body.appendChild(button);
+    lensState.button = button;
+
+    console.log("[Lens] Button created");
+  }
+
+  // ===========================================================================
+  // NAVIGATION HANDLING
+  // ===========================================================================
+
+  function resetLensState() {
+    if (lensState.active) {
+      deactivateLens();
+    }
+    lensState.pythonLines = [];
+    lensState.pythonFullCode = "";
+    lensState.originalState.lineElements = [];
+    lensState.originalState.textareaValue = "";
+  }
+
+  function initializeLens() {
+    resetLensState();
+
+    if (!isGitHubBlobPage() || !isCppFile()) {
+      if (lensState.button) {
+        lensState.button.remove();
+        lensState.button = null;
+      }
+      return;
+    }
+
+    if (!lensState.button || !lensState.button.isConnected) {
+      createButton();
+    }
+
+    updateButtonState();
+    console.log("[Lens] Initialized for C++ file");
+  }
+
+  function setupNavigationDetection() {
+    let lastUrl = window.location.href;
+
+    setInterval(() => {
+      if (window.location.href !== lastUrl) {
+        lastUrl = window.location.href;
+        console.log("[Lens] Navigation detected");
+        setTimeout(initializeLens, 500);
+      }
+    }, 500);
+
+    window.addEventListener("popstate", () => {
+      setTimeout(initializeLens, 500);
+    });
+
+    document.addEventListener("turbo:load", () => {
+      setTimeout(initializeLens, 100);
+    });
+
+    document.addEventListener("turbo:render", () => {
+      setTimeout(initializeLens, 100);
+    });
+  }
+
+  // ===========================================================================
+  // KEYBOARD SHORTCUTS
+  // ===========================================================================
+
+  function setupKeyboardShortcuts() {
+    document.addEventListener("keydown", (e) => {
+      if (e.altKey && e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        if (lensState.button && isGitHubBlobPage() && isCppFile()) {
+          handleButtonClick();
+        }
+      }
+    });
+  }
+
+  // ===========================================================================
+  // MAIN
+  // ===========================================================================
+
+  function main() {
+    console.log("[Lens] C++ to Python Lens loaded");
+    initializeLens();
+    setupNavigationDetection();
+    setupKeyboardShortcuts();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", main);
+  } else {
+    main();
+  }
+})();
