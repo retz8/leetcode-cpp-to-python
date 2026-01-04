@@ -40,7 +40,9 @@
 
     originalState: {
       textareaValue: "",
-      lineElements: [],
+      // WeakMap allows garbage collection when elements are removed from DOM
+      elementData: new WeakMap(),  // element -> { originalHTML, originalWhiteSpace, originalTabSize, lineNum }
+      lineNumbers: [],  // Track which line numbers we've processed
     },
 
     observer: null,
@@ -67,13 +69,21 @@
     }
 
     const lineElements = DOMHelpers.getCodeLineElements(LENS_CONFIG.selectors);
-    lensState.originalState.lineElements = lineElements.map((el) => ({
-      element: el,
-      originalHTML: el.innerHTML,
-      originalWhiteSpace: el.style.whiteSpace,
-      originalTabSize: el.style.tabSize,
-      lineNum: DOMHelpers.getLineNumber(el),
-    }));
+    
+    lineElements.forEach((el) => {
+      const lineNum = DOMHelpers.getLineNumber(el);
+      
+      lensState.originalState.elementData.set(el, {
+        originalHTML: el.innerHTML,
+        originalWhiteSpace: el.style.whiteSpace,
+        originalTabSize: el.style.tabSize,
+        lineNum: lineNum,
+      });
+      
+      if (!lensState.originalState.lineNumbers.includes(lineNum)) {
+        lensState.originalState.lineNumbers.push(lineNum);
+      }
+    });
 
     console.log(
       "[Lens] Stored original state for",
@@ -102,15 +112,16 @@
   }
 
   function restoreOriginal() {
-    lensState.originalState.lineElements.forEach(
-      ({ element, originalHTML, originalWhiteSpace, originalTabSize }) => {
-        if (element.isConnected) {
-          element.innerHTML = originalHTML;
-          element.style.whiteSpace = originalWhiteSpace || "";
-          element.style.tabSize = originalTabSize || "";
-        }
+    const lineElements = DOMHelpers.getCodeLineElements(LENS_CONFIG.selectors);
+    
+    lineElements.forEach((element) => {
+      const data = lensState.originalState.elementData.get(element);
+      if (data && element.isConnected) {
+        element.innerHTML = data.originalHTML;
+        element.style.whiteSpace = data.originalWhiteSpace || "";
+        element.style.tabSize = data.originalTabSize || "";
       }
-    );
+    });
 
     textareaHandler.restore();
 
@@ -126,19 +137,23 @@
       const isAlreadyProcessed = el.querySelector(".pl-lens-python") !== null;
       if (isAlreadyProcessed) return;
 
-      const stored = lensState.originalState.lineElements.find(
-        (item) => item.element === el
-      );
+      const stored = lensState.originalState.elementData.has(el);
 
       if (!stored) {
         const lineNum = DOMHelpers.getLineNumber(el);
         if (lineNum === null || lineNum < 1) return;
 
-        lensState.originalState.lineElements.push({
-          element: el,
+        // Store in WeakMap with all CSS properties
+        lensState.originalState.elementData.set(el, {
           originalHTML: el.innerHTML,
+          originalWhiteSpace: el.style.whiteSpace,
+          originalTabSize: el.style.tabSize,
           lineNum: lineNum,
         });
+
+        if (!lensState.originalState.lineNumbers.includes(lineNum)) {
+          lensState.originalState.lineNumbers.push(lineNum);
+        }
 
         const pythonLine = lensState.pythonLines[lineNum - 1];
         const displayText = pythonLine !== undefined ? pythonLine : "";
@@ -175,7 +190,16 @@
 
     restoreOriginal();
 
-    lensState.originalState.lineElements = [];
+    // Log memory stats for large files
+    if (lensState.originalState.lineNumbers.length > 1000) {
+      console.warn(
+        `[Lens] Large file: tracked ${lensState.originalState.lineNumbers.length} lines`
+      );
+    }
+
+    // Clear WeakMap by creating new instance (allows GC of detached elements)
+    lensState.originalState.elementData = new WeakMap();
+    lensState.originalState.lineNumbers = [];
     lensState.originalState.textareaValue = "";
     lensState.active = false;
 
@@ -263,7 +287,8 @@
     }
     lensState.pythonLines = [];
     lensState.pythonFullCode = "";
-    lensState.originalState.lineElements = [];
+    lensState.originalState.elementData = new WeakMap();
+    lensState.originalState.lineNumbers = [];
     lensState.originalState.textareaValue = "";
 
     textareaHandler.reset();
